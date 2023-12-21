@@ -122,13 +122,22 @@ void PyramidKLT(string path) {
     destroyAllWindows();
 }
 
-// Function to compute gradients in x and y directions using Sobel operators
+// Function to compute Lucas-Kanade optical flow for a given window
 void computeGradient(const Mat& img, Mat& gradX, Mat& gradY) {
     Sobel(img, gradX, CV_32F, 1, 0, 3);
     Sobel(img, gradY, CV_32F, 0, 1, 3);
 }
 
-// Function to compute Lucas-Kanade optical flow for a given window
+void createImagePyramid(const Mat& img, vector<Mat>& pyramid, int levels) {
+    pyramid.push_back(img);
+
+    for (int l = 1; l < levels; ++l) {
+        Mat downsampledImg;
+        pyrDown(pyramid[l - 1], downsampledImg);
+        pyramid.push_back(downsampledImg);
+    }
+}
+
 void LucasKanadeOpticalFlow(const Mat& prevImg, const Mat& nextImg, Mat& flowX, Mat& flowY, int windowSize = 3) {
     Mat gradX, gradY;
     computeGradient(prevImg, gradX, gradY);
@@ -169,15 +178,6 @@ void LucasKanadeOpticalFlow(const Mat& prevImg, const Mat& nextImg, Mat& flowX, 
     }
 }
 
-void createImagePyramid(const Mat& img, vector<Mat>& pyramid, int levels) {
-    pyramid.push_back(img);
-
-    for (int l = 1; l < levels; ++l) {
-        Mat downsampledImg;
-        pyrDown(pyramid[l - 1], downsampledImg);
-        pyramid.push_back(downsampledImg);
-    }
-}
 
 void MyPyramidKLT(string path)
 {
@@ -210,6 +210,12 @@ void MyPyramidKLT(string path)
     cap>> prevFrame;
     cvtColor(prevFrame, prevGray, COLOR_BGR2GRAY);
 
+    vector<Point2f> corners;
+    goodFeaturesToTrack(prevGray, corners, 100, 0.01, 10);
+
+    vector<Point2f> nextCorners(corners.size());
+
+
     while (true) {
         cap >> frame;
 
@@ -229,18 +235,21 @@ void MyPyramidKLT(string path)
 
         // Visualize optical flow as arrows on the frame
         Mat flowVis;
-        cvtColor(prevFrame, flowVis, COLOR_GRAY2BGR);
+        cvtColor(gray, flowVis, COLOR_GRAY2BGR);
 
-        if (!prevFrame.empty()) {
-            cvtColor(prevFrame, flowVis, COLOR_GRAY2BGR); // Convert previous frame to BGR for visualization
+        for (size_t i = 0; i < corners.size(); ++i) {
+            int x = static_cast<int>(corners[i].x);
+            int y = static_cast<int>(corners[i].y);
+
+        if (x >= 0 && x < flowX.cols && y >= 0 && y < flowX.rows) {
+            Point2f flow = Point2f(flowX.at<float>(y, x), flowY.at<float>(y, x));
+
+            // Update corner points' positions based on optical flow
+            nextCorners[i] = corners[i] + flow;
+
+            line(flowVis, corners[i], nextCorners[i], Scalar(0, 255, 0),2);
+            circle(flowVis, Point(cvRound(nextCorners[i].x), cvRound(nextCorners[i].y)), 1, Scalar(0, 0, 255), -1);
         }
-
-        for (int y = 0; y < frame.rows; y += 10) {
-            for (int x = 0; x < frame.cols; x += 10) {
-                Point2f flow = Point2f(flowX.at<float>(y, x), flowY.at<float>(y, x));
-                line(flowVis, Point(x, y), Point(cvRound(x + flow.x), cvRound(y + flow.y)), Scalar(0, 255, 0));
-                circle(flowVis, Point(cvRound(x + flow.x), cvRound(y + flow.y)), 1, Scalar(0, 0, 255), -1);
-            }
         }
 
         imshow("Pyramid KLT Tracking", flowVis);
@@ -250,6 +259,7 @@ void MyPyramidKLT(string path)
         // Update previous frame and previous grayscale frame
         frame.copyTo(prevFrame);
         gray.copyTo(prevGray);
+        corners = nextCorners;
         
 
         if (waitKey(1) == 27) {
