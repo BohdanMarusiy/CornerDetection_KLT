@@ -122,59 +122,36 @@ void PyramidKLT(string path) {
     destroyAllWindows();
 }
 
-// Function to compute Lucas-Kanade optical flow for a given window
-void computeGradient(const Mat& img, Mat& gradX, Mat& gradY) {
-    Sobel(img, gradX, CV_32F, 1, 0, 3);
-    Sobel(img, gradY, CV_32F, 0, 1, 3);
-}
 
-void createImagePyramid(const Mat& img, vector<Mat>& pyramid, int levels) {
-    pyramid.push_back(img);
+void LucasKanadeOpticalFlow(const vector<Point2f>& prevCorners, vector<Point2f>& newCorners, Mat& Ix, Mat& Iy, Mat& It, int windowSize = 5) {
+    Mat u(Ix.size(), CV_32F, Scalar(1.0)); // Flow in the x-direction
+    Mat v(Ix.size(), CV_32F, Scalar(1.0)); // Flow in the y-direction
+    Mat A = Mat::zeros(2, 2, CV_32F); // Matrix A for Lucas-Kanade
+    Mat b = Mat::zeros(2, 1, CV_32F); // Vector b for Lucas-Kanade
+    for (size_t i = 0; i < prevCorners.size(); ++i) {
+        int y = static_cast<int>(prevCorners[i].y);
+        int x = static_cast<int>(prevCorners[i].x);
 
-    for (int l = 1; l < levels; ++l) {
-        Mat downsampledImg;
-        pyrDown(pyramid[l - 1], downsampledImg);
-        pyramid.push_back(downsampledImg);
-    }
-}
+        // Optical flow calculation for a specific corner point
+        Rect roi(x - 2, y - 2, windowSize, windowSize);  // Define ROI for the 5x5 window
+        Mat IxROI = Ix(roi);           // Extract 5x5 windows from Ix, Iy, It
+        Mat IyROI = Iy(roi);
+        Mat ItROI = It(roi);
 
-void LucasKanadeOpticalFlow(const Mat& prevImg, const Mat& nextImg, Mat& flowX, Mat& flowY, int windowSize = 3) {
-    Mat gradX, gradY;
-    computeGradient(prevImg, gradX, gradY);
+        A.at<float>(0, 0) = static_cast<float>(sum(IxROI.mul(IxROI))[0]);
+        A.at<float>(0, 1) = static_cast<float>(sum(IxROI.mul(IyROI))[0]);
+        A.at<float>(1, 0) = A.at<float>(0, 1);
+        A.at<float>(1, 1) = static_cast<float>(sum(IyROI.mul(IyROI))[0]);
 
-    flowX = Mat(prevImg.size(), CV_32F);
-    flowY = Mat(prevImg.size(), CV_32F);
+        b.at<float>(0, 0) = static_cast<float>(-sum(IxROI.mul(ItROI))[0]);
+        b.at<float>(1, 0) = static_cast<float>(-sum(IyROI.mul(ItROI))[0]);
 
-    int halfWindowSize = windowSize / 2;
+        Mat c = A.inv() * b;
 
-    for (int y = halfWindowSize; y < prevImg.rows - halfWindowSize; ++y) {
-        for (int x = halfWindowSize; x < prevImg.cols - halfWindowSize; ++x) {
-            float A[4] = { 0.0f };
-            float b[2] = { 0.0f };
+        u.at<float>(y, x) = c.at<float>(0, 0);
+        v.at<float>(y, x) = c.at<float>(1, 0);
 
-            for (int j = -halfWindowSize; j <= halfWindowSize; ++j) {
-                for (int i = -halfWindowSize; i <= halfWindowSize; ++i) {
-                    float Ix = gradX.at<float>(y + j, x + i);
-                    float Iy = gradY.at<float>(y + j, x + i);
-                    float It = static_cast<float>(nextImg.at<uchar>(y + j, x + i)) - static_cast<float>(prevImg.at<uchar>(y + j, x + i));
-
-                    A[0] += Ix * Ix;
-                    A[1] += Ix * Iy;
-                    A[2] += Ix * Iy;
-                    A[3] += Iy * Iy;
-
-                    b[0] += -Ix * It;
-                    b[1] += -Iy * It;
-                }
-            }
-
-            float detA = A[0] * A[3] - A[1] * A[2];
-            if (std::abs(detA) > 1e-5) {
-                float invDetA = 1.0f / detA;
-                flowX.at<float>(y, x) = (A[3] * b[0] - A[1] * b[1]) * invDetA;
-                flowY.at<float>(y, x) = (A[0] * b[1] - A[2] * b[0]) * invDetA;
-            }
-        }
+        newCorners[i] = Point2f(x + u.at<float>(y, x), y + v.at<float>(y, x));
     }
 }
 
@@ -197,7 +174,7 @@ void MyPyramidKLT(string path)
     // Define the codec and create VideoWriter object
     VideoWriter outputVideo;
     string outputFilename = "C:/work/results/pyramid.mp4"; // Change this filename as needed
-    int codec = VideoWriter::fourcc('x', '2', '6', '4');
+    int codec = VideoWriter::fourcc('x', 'P', '4', 'V');
     outputVideo.open(outputFilename, codec, fps, Size(frameWidth, frameHeight));
 
     if (!outputVideo.isOpened()) {
@@ -205,61 +182,61 @@ void MyPyramidKLT(string path)
         return;
     }
 
-    Mat frame, prevFrame, gray, prevGray;
-    Mat flowX, flowY;
+    Mat frame, prevFrame, gray, prevGray, img;
     cap>> prevFrame;
     cvtColor(prevFrame, prevGray, COLOR_BGR2GRAY);
+    prevGray.convertTo(prevGray, CV_32F, 1.0 / 255.0);
 
-    vector<Point2f> corners;
-    goodFeaturesToTrack(prevGray, corners, 100, 0.01, 10);
+    vector<Point2f> keypoints;
+    int maxCorners = 100;
+    double qualityLevel = 0.01;
+    double minDistance = 10.0;
+    int blockSize = 3;
+    bool useHarrisDetector = false;
+    double k = 0.04;
+    goodFeaturesToTrack(prevGray, keypoints, maxCorners, qualityLevel, minDistance,
+                        Mat(), blockSize, useHarrisDetector, k);
 
-    vector<Point2f> nextCorners(corners.size());
-
+    Mat Gx = (Mat_<float>(2, 2) << -1, 1, -1, 1);
+    Mat Gy = (Mat_<float>(2, 2) << -1, -1, 1, 1);
+    Mat Gt1 = (Mat_<float>(2, 2) << -1, -1, -1, -1);
+    Mat Gt2 = (Mat_<float>(2, 2) << 1, 1, 1, 1);
+    vector<Point2f> nextKeypoints;
 
     while (true) {
         cap >> frame;
-
-        if (frame.empty()) {
-            break;
-        }
-
         cvtColor(frame, gray, COLOR_BGR2GRAY);
+        gray.convertTo(gray, CV_32F, 1.0 / 255.0);
+        
 
-        // Create image pyramids for current and previous frames
-        vector<Mat> prevPyr, currPyr;
-        createImagePyramid(prevGray, prevPyr, 3);
-        createImagePyramid(gray, currPyr, 3);
+        Mat Ix, Iy, It, It1, It2;
+        Ix.convertTo(Ix, CV_32F);
+        Iy.convertTo(Iy, CV_32F);
+        It.convertTo(It, CV_32F);
+        It1.convertTo(It1, CV_32F);
+        It2.convertTo(It2, CV_32F);
+        filter2D(prevGray, Ix, -1, Gx);
+        filter2D(gray, Iy, -1, Gy);
+        filter2D(prevGray, It1, -1, Gt1);
+        filter2D(gray, It2, -1, Gt2);
+        It = It1 + It2;
+        
+        nextKeypoints = keypoints;
 
-        // Perform Lucas-Kanade optical flow between consecutive frames using pyramids
-        LucasKanadeOpticalFlow(prevPyr[0], currPyr[0], flowX, flowY);
+        LucasKanadeOpticalFlow(keypoints, nextKeypoints, Ix, Iy, It);
 
-        // Visualize optical flow as arrows on the frame
-        Mat flowVis;
-        cvtColor(gray, flowVis, COLOR_GRAY2BGR);
-
-        for (size_t i = 0; i < corners.size(); ++i) {
-            int x = static_cast<int>(corners[i].x);
-            int y = static_cast<int>(corners[i].y);
-
-        if (x >= 0 && x < flowX.cols && y >= 0 && y < flowX.rows) {
-            Point2f flow = Point2f(flowX.at<float>(y, x), flowY.at<float>(y, x));
-
-            // Update corner points' positions based on optical flow
-            nextCorners[i] = corners[i] + flow;
-
-            line(flowVis, corners[i], nextCorners[i], Scalar(0, 255, 0),2);
-            circle(flowVis, Point(cvRound(nextCorners[i].x), cvRound(nextCorners[i].y)), 1, Scalar(0, 0, 255), -1);
-        }
+        for (size_t i = 0; i < keypoints.size(); ++i) {
+            line(frame, keypoints[i], nextKeypoints[i], Scalar(0, 255, 0), 2);
+            circle(frame, nextKeypoints[i], 3, Scalar(0, 0, 255), -1);
         }
 
-        imshow("Pyramid KLT Tracking", flowVis);
+        imshow("Pyramid KLT Tracking", frame);
 
-        outputVideo.write(flowVis); // Write frame with optical flow visualization to video
+        outputVideo.write(frame); // Write frame with optical flow visualization to video
 
         // Update previous frame and previous grayscale frame
         frame.copyTo(prevFrame);
         gray.copyTo(prevGray);
-        corners = nextCorners;
         
 
         if (waitKey(1) == 27) {
@@ -273,7 +250,6 @@ void MyPyramidKLT(string path)
 }
 
 int main(int, char**){
-
 
     string path = "C:/work/KLT/4.gif";
     //PyramidKLT(path);
